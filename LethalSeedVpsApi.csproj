@@ -1,10 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
-    <ProjectReference Include="..\LethalSeedSimulator\src\LethalSeedSimulator.Core\LethalSeedSimulator.Core.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Npgsql" Version="9.0.3" />
   </ItemGroup>
 

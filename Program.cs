@@ -1,4 +1,3 @@
-using LethalSeedSimulator.Core;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
