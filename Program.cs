@@ -11,19 +11,55 @@ if (string.IsNullOrWhiteSpace(pgConnectionString))
 }
 
 var apiKey = Environment.GetEnvironmentVariable("LETHAL_SIM_API_KEY");
+var adminUser = Environment.GetEnvironmentVariable("LETHAL_SIM_ADMIN_USERNAME");
+var adminPass = Environment.GetEnvironmentVariable("LETHAL_SIM_ADMIN_PASSWORD");
 app.Use(async (context, next) =>
 {
-    if (string.IsNullOrWhiteSpace(apiKey))
+    if (string.IsNullOrWhiteSpace(apiKey) && string.IsNullOrWhiteSpace(adminUser))
     {
         await next();
         return;
     }
 
-    if (!context.Request.Headers.TryGetValue("X-Api-Key", out var incoming) ||
-        !string.Equals(incoming.ToString(), apiKey, StringComparison.Ordinal))
+    var authorized = false;
+    if (!string.IsNullOrWhiteSpace(apiKey) &&
+        context.Request.Headers.TryGetValue("X-Api-Key", out var incoming) &&
+        string.Equals(incoming.ToString(), apiKey, StringComparison.Ordinal))
+    {
+        authorized = true;
+    }
+
+    if (!authorized &&
+        !string.IsNullOrWhiteSpace(adminUser) &&
+        !string.IsNullOrWhiteSpace(adminPass) &&
+        context.Request.Headers.TryGetValue("Authorization", out var authHeader))
+    {
+        var value = authHeader.ToString();
+        if (value.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var encoded = value["Basic ".Length..].Trim();
+                var decoded = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+                var idx = decoded.IndexOf(':');
+                if (idx > 0)
+                {
+                    var user = decoded[..idx];
+                    var pass = decoded[(idx + 1)..];
+                    authorized = string.Equals(user, adminUser, StringComparison.Ordinal) &&
+                                 string.Equals(pass, adminPass, StringComparison.Ordinal);
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    if (!authorized)
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        await context.Response.WriteAsync("Missing or invalid API key.");
+        await context.Response.WriteAsync("Unauthorized.");
         return;
     }
 
@@ -93,7 +129,7 @@ app.MapPost("/api/seeds/batch", async (VpsSeedBatchUpsertRequest request, Cancel
           estimated_outside_hazards, power_off_at_start, key_count, dungeon_seed, dungeon_flow_id,
           dungeon_flow_name, dungeon_flow_theme, apparatus_spawned, apparatus_value, rolls_json
         ) VALUES (
-          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25
+          @p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,@p14,@p15,@p16,@p17,@p18,@p19,@p20,@p21,@p22,@p23,@p24,@p25
         ) {seedConflict};
         """;
     await using var seedCmd = new NpgsqlCommand(seedSql, pg, tx);
@@ -105,7 +141,7 @@ app.MapPost("/api/seeds/batch", async (VpsSeedBatchUpsertRequest request, Cancel
     var itemSql = $"""
         INSERT INTO seed_item_counts (
             rulepack_version, moon_id, seed, item_id, item_name, item_count
-        ) VALUES ($1,$2,$3,$4,$5,$6) {itemConflict};
+        ) VALUES (@p1,@p2,@p3,@p4,@p5,@p6) {itemConflict};
         """;
     await using var itemCmd = new NpgsqlCommand(itemSql, pg, tx);
     for (var i = 1; i <= 6; i++)
@@ -114,58 +150,58 @@ app.MapPost("/api/seeds/batch", async (VpsSeedBatchUpsertRequest request, Cancel
     }
 
     await using var deleteItems = new NpgsqlCommand(
-        "DELETE FROM seed_item_counts WHERE rulepack_version=$1 AND moon_id=$2 AND seed=$3;",
+        "DELETE FROM seed_item_counts WHERE rulepack_version=@p1 AND moon_id=@p2 AND seed=@p3;",
         pg,
         tx);
-    deleteItems.Parameters.Add(new NpgsqlParameter("$1", DBNull.Value));
-    deleteItems.Parameters.Add(new NpgsqlParameter("$2", DBNull.Value));
-    deleteItems.Parameters.Add(new NpgsqlParameter("$3", DBNull.Value));
+    deleteItems.Parameters.Add(new NpgsqlParameter("@p1", DBNull.Value));
+    deleteItems.Parameters.Add(new NpgsqlParameter("@p2", DBNull.Value));
+    deleteItems.Parameters.Add(new NpgsqlParameter("@p3", DBNull.Value));
 
     foreach (var row in request.Rows)
     {
-        seedCmd.Parameters["$1"].Value = request.RulepackVersion;
-        seedCmd.Parameters["$2"].Value = request.MoonId;
-        seedCmd.Parameters["$3"].Value = row.Seed;
-        seedCmd.Parameters["$4"].Value = row.RunSeed;
-        seedCmd.Parameters["$5"].Value = row.WeatherSeed;
-        seedCmd.Parameters["$6"].Value = row.Weather;
-        seedCmd.Parameters["$7"].Value = row.ScrapCount;
-        seedCmd.Parameters["$8"].Value = row.TotalScrapValue;
-        seedCmd.Parameters["$9"].Value = row.GoldbarOnly ? 1 : 0;
-        seedCmd.Parameters["$10"].Value = row.InsideEnemyRolls;
-        seedCmd.Parameters["$11"].Value = row.OutsideEnemyRolls;
-        seedCmd.Parameters["$12"].Value = row.DaytimeEnemyRolls;
-        seedCmd.Parameters["$13"].Value = row.FirstInsideSpawnTime;
-        seedCmd.Parameters["$14"].Value = row.FirstOutsideSpawnTime;
-        seedCmd.Parameters["$15"].Value = row.FirstDaytimeSpawnTime;
-        seedCmd.Parameters["$16"].Value = row.EstimatedOutsideHazards;
-        seedCmd.Parameters["$17"].Value = row.PowerOffAtStart ? 1 : 0;
-        seedCmd.Parameters["$18"].Value = row.KeyCount;
-        seedCmd.Parameters["$19"].Value = row.DungeonSeed;
-        seedCmd.Parameters["$20"].Value = row.DungeonFlowId;
-        seedCmd.Parameters["$21"].Value = row.DungeonFlowName;
-        seedCmd.Parameters["$22"].Value = row.DungeonFlowTheme;
-        seedCmd.Parameters["$23"].Value = row.ApparatusSpawned ? 1 : 0;
-        seedCmd.Parameters["$24"].Value = row.ApparatusValue;
-        seedCmd.Parameters["$25"].Value = string.IsNullOrWhiteSpace(row.RollsJson) ? DBNull.Value : row.RollsJson;
+        seedCmd.Parameters["@p1"].Value = request.RulepackVersion;
+        seedCmd.Parameters["@p2"].Value = request.MoonId;
+        seedCmd.Parameters["@p3"].Value = row.Seed;
+        seedCmd.Parameters["@p4"].Value = row.RunSeed;
+        seedCmd.Parameters["@p5"].Value = row.WeatherSeed;
+        seedCmd.Parameters["@p6"].Value = row.Weather;
+        seedCmd.Parameters["@p7"].Value = row.ScrapCount;
+        seedCmd.Parameters["@p8"].Value = row.TotalScrapValue;
+        seedCmd.Parameters["@p9"].Value = row.GoldbarOnly ? 1 : 0;
+        seedCmd.Parameters["@p10"].Value = row.InsideEnemyRolls;
+        seedCmd.Parameters["@p11"].Value = row.OutsideEnemyRolls;
+        seedCmd.Parameters["@p12"].Value = row.DaytimeEnemyRolls;
+        seedCmd.Parameters["@p13"].Value = row.FirstInsideSpawnTime;
+        seedCmd.Parameters["@p14"].Value = row.FirstOutsideSpawnTime;
+        seedCmd.Parameters["@p15"].Value = row.FirstDaytimeSpawnTime;
+        seedCmd.Parameters["@p16"].Value = row.EstimatedOutsideHazards;
+        seedCmd.Parameters["@p17"].Value = row.PowerOffAtStart ? 1 : 0;
+        seedCmd.Parameters["@p18"].Value = row.KeyCount;
+        seedCmd.Parameters["@p19"].Value = row.DungeonSeed;
+        seedCmd.Parameters["@p20"].Value = row.DungeonFlowId;
+        seedCmd.Parameters["@p21"].Value = row.DungeonFlowName;
+        seedCmd.Parameters["@p22"].Value = row.DungeonFlowTheme;
+        seedCmd.Parameters["@p23"].Value = row.ApparatusSpawned ? 1 : 0;
+        seedCmd.Parameters["@p24"].Value = row.ApparatusValue;
+        seedCmd.Parameters["@p25"].Value = string.IsNullOrWhiteSpace(row.RollsJson) ? DBNull.Value : row.RollsJson;
         await seedCmd.ExecuteNonQueryAsync(ct);
 
         if (request.ConflictMode == PostgresSeedSyncConflictMode.Upsert)
         {
-            deleteItems.Parameters["$1"].Value = request.RulepackVersion;
-            deleteItems.Parameters["$2"].Value = request.MoonId;
-            deleteItems.Parameters["$3"].Value = row.Seed;
+            deleteItems.Parameters["@p1"].Value = request.RulepackVersion;
+            deleteItems.Parameters["@p2"].Value = request.MoonId;
+            deleteItems.Parameters["@p3"].Value = row.Seed;
             await deleteItems.ExecuteNonQueryAsync(ct);
         }
 
         foreach (var item in row.ItemCounts)
         {
-            itemCmd.Parameters["$1"].Value = request.RulepackVersion;
-            itemCmd.Parameters["$2"].Value = request.MoonId;
-            itemCmd.Parameters["$3"].Value = row.Seed;
-            itemCmd.Parameters["$4"].Value = item.ItemId;
-            itemCmd.Parameters["$5"].Value = item.ItemName;
-            itemCmd.Parameters["$6"].Value = item.ItemCount;
+            itemCmd.Parameters["@p1"].Value = request.RulepackVersion;
+            itemCmd.Parameters["@p2"].Value = request.MoonId;
+            itemCmd.Parameters["@p3"].Value = row.Seed;
+            itemCmd.Parameters["@p4"].Value = item.ItemId;
+            itemCmd.Parameters["@p5"].Value = item.ItemName;
+            itemCmd.Parameters["@p6"].Value = item.ItemCount;
             await itemCmd.ExecuteNonQueryAsync(ct);
         }
     }
@@ -219,36 +255,36 @@ app.MapGet(
             """
             SELECT COUNT(*)
             FROM seeds
-            WHERE rulepack_version = $1
-              AND moon_id = $2
-              AND ($3::int IS NULL OR total_scrap_value >= $3)
-              AND ($4::int IS NULL OR total_scrap_value <= $4);
+            WHERE rulepack_version = @p1
+              AND moon_id = @p2
+              AND (@p3::int IS NULL OR total_scrap_value >= @p3)
+              AND (@p4::int IS NULL OR total_scrap_value <= @p4);
             """,
             pg);
-        count.Parameters.AddWithValue("$1", rulepackVersion);
-        count.Parameters.AddWithValue("$2", moonId);
-        count.Parameters.AddWithValue("$3", (object?)minTotalScrapValue ?? DBNull.Value);
-        count.Parameters.AddWithValue("$4", (object?)maxTotalScrapValue ?? DBNull.Value);
+        count.Parameters.AddWithValue("@p1", rulepackVersion);
+        count.Parameters.AddWithValue("@p2", moonId);
+        count.Parameters.AddWithValue("@p3", (object?)minTotalScrapValue ?? DBNull.Value);
+        count.Parameters.AddWithValue("@p4", (object?)maxTotalScrapValue ?? DBNull.Value);
         var totalCount = Convert.ToInt32(await count.ExecuteScalarAsync(ct) ?? 0);
 
         var offset = (page - 1) * pageSize;
         var sql = $"""
             SELECT seed, total_scrap_value, scrap_count, weather, key_count, dungeon_flow_theme, apparatus_value
             FROM seeds
-            WHERE rulepack_version = $1
-              AND moon_id = $2
-              AND ($3::int IS NULL OR total_scrap_value >= $3)
-              AND ($4::int IS NULL OR total_scrap_value <= $4)
+            WHERE rulepack_version = @p1
+              AND moon_id = @p2
+              AND (@p3::int IS NULL OR total_scrap_value >= @p3)
+              AND (@p4::int IS NULL OR total_scrap_value <= @p4)
             ORDER BY {orderBy} {direction}, seed ASC
-            LIMIT $5 OFFSET $6;
+            LIMIT @p5 OFFSET @p6;
             """;
         await using var query = new NpgsqlCommand(sql, pg);
-        query.Parameters.AddWithValue("$1", rulepackVersion);
-        query.Parameters.AddWithValue("$2", moonId);
-        query.Parameters.AddWithValue("$3", (object?)minTotalScrapValue ?? DBNull.Value);
-        query.Parameters.AddWithValue("$4", (object?)maxTotalScrapValue ?? DBNull.Value);
-        query.Parameters.AddWithValue("$5", pageSize);
-        query.Parameters.AddWithValue("$6", offset);
+        query.Parameters.AddWithValue("@p1", rulepackVersion);
+        query.Parameters.AddWithValue("@p2", moonId);
+        query.Parameters.AddWithValue("@p3", (object?)minTotalScrapValue ?? DBNull.Value);
+        query.Parameters.AddWithValue("@p4", (object?)maxTotalScrapValue ?? DBNull.Value);
+        query.Parameters.AddWithValue("@p5", pageSize);
+        query.Parameters.AddWithValue("@p6", offset);
 
         var rows = new List<GuiSeedRowDto>();
         await using var reader = await query.ExecuteReaderAsync(ct);
@@ -282,12 +318,12 @@ app.MapGet("/api/moons/progress", async (string rulepackVersion, CancellationTok
         """
         SELECT moon_id, COUNT(*) AS c
         FROM seeds
-        WHERE rulepack_version = $1
+        WHERE rulepack_version = @p1
         GROUP BY moon_id
         ORDER BY moon_id;
         """,
         pg);
-    cmd.Parameters.AddWithValue("$1", rulepackVersion);
+    cmd.Parameters.AddWithValue("@p1", rulepackVersion);
     var rows = new List<VpsMoonProgressRow>();
     await using var reader = await cmd.ExecuteReaderAsync(ct);
     while (await reader.ReadAsync(ct))
